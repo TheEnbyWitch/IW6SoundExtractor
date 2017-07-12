@@ -7,6 +7,10 @@
 *.userosscache
 *.sln.docstates
 
+# Game assets
+*.ff
+*.ff.dump
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
