@@ -11,8 +11,12 @@
 #define FF_MAGIC_SIGNED "IWff01005"
 #define FF_MAGIC_UNSIGNED "IWffu1005"
 
-#define FF_ZLIB_DATA_HEADER_SIGNED "IWffs100" // remember to skip 4 bytes
-#define FF_ZLIB_DATA_HEADER_UNSIGNED "\x78\xDA"
+//#define FF_ZLIB_DATA_HEADER_SIGNED "IWffs100" // remember to skip 4 bytes
+#define FF_ZLIB_DATA_HEADER 0x78 // its actually the same in both signed and unsigned
+
+#define FF_ZLIB_DATA_NO_COMPRESSION 0x01
+#define FF_ZLIB_DATA_DEFAULT_COMPRESSION 0x9C
+#define FF_ZLIB_DATA_BEST_COMPRESSION 0xDA
 
 #define ERR_NOT_IMPLEMENTED Print(CHANNEL_ERROR, "Not implemented!")
 
@@ -198,21 +202,30 @@ bool ProcessFile(char path[])
 	unsigned have;
 	unsigned char in[FF_CHUNK_SIZE+1];
 	unsigned char out[FF_CHUNK_SIZE+1];
-	char dummy[0x3ff8];
-	if (isSigned)
-	{
-		char zlibDataHeader[9] = FF_ZLIB_DATA_HEADER_SIGNED;
-		char zlibDataHeaderToCompare[8];
-		while (strncmp(zlibDataHeader, zlibDataHeaderToCompare, 8) != 0)
-		{
-			for (int i = 1; i < 8; i++)
-			{
-				zlibDataHeaderToCompare[i - 1] = zlibDataHeaderToCompare[i];
-			}
-			fread_s(&zlibDataHeaderToCompare[7], 1, 1, 1, currentFile);
-		}
 
-		fread_s(dummy, 0x3ff8, 1, 0x3ff8, currentFile); // skip the garbage //0x146
+		unsigned char zlibDataHeaderToCompare[4];
+		while (1)
+		{
+			zlibDataHeaderToCompare[0] = zlibDataHeaderToCompare[1];
+			zlibDataHeaderToCompare[1] = zlibDataHeaderToCompare[2];
+			zlibDataHeaderToCompare[2] = zlibDataHeaderToCompare[3];
+
+
+			fread_s(&zlibDataHeaderToCompare[3], 1, 1, 1, currentFile);
+			int temp = ftell(currentFile);
+			temp;
+			ftell(currentFile);
+			if ((FF_ZLIB_DATA_HEADER == zlibDataHeaderToCompare[1] &&
+				(
+					//FF_ZLIB_DATA_DEFAULT_COMPRESSION == zlibDataHeaderToCompare[2] ||
+					//FF_ZLIB_DATA_NO_COMPRESSION == zlibDataHeaderToCompare[2] ||
+					FF_ZLIB_DATA_BEST_COMPRESSION == zlibDataHeaderToCompare[2]
+					)) &&
+				zlibDataHeaderToCompare[0] != '\x7c' && zlibDataHeaderToCompare[3] != '\x09')
+				break;
+		}
+		fseek(currentFile, -3, SEEK_CUR);
+		//fread_s(dummy, 0x3ff8, 1, 0x3ff8, currentFile); // skip the garbage //0x146
 		int zlibDataBegin = ftell(currentFile);
 		Print(CHANNEL_INFO, "Found zlib data at %d", zlibDataBegin);
 		
@@ -255,6 +268,7 @@ bool ProcessFile(char path[])
 				}
 				have = FF_CHUNK_SIZE - stream.avail_out;
 				fwrite(out, 1, have, dumpOutput);
+				//fflush(dumpOutput);
 				ret2 = ferror(dumpOutput);
 				if (ret2)
 				{
@@ -268,21 +282,17 @@ bool ProcessFile(char path[])
 			}
 		}
 		inflateEnd(&stream);
-		Print(CHANNEL_ERROR, "%d", ret);
-		ret = (ret == Z_STREAM_END ? Z_OK : Z_DATA_ERROR);
+		//Print(CHANNEL_ERROR, "%d", ret);
+		ret = (ret == Z_STREAM_END || ret == Z_OK ? Z_OK : Z_DATA_ERROR);
 		if (ret == Z_DATA_ERROR)
 		{
-			Print(CHANNEL_ERROR, "A data error occured and I have no idea what that means");
+			Print(CHANNEL_ERROR, "An issue occured during export and I wasn't able to catch it somehow.");
 		}
+		Print(CHANNEL_INFO, "Saving dump...");
 		fclose(dumpOutput);
 		fclose(currentFile);
-	}
-	else {
-		ERR_NOT_IMPLEMENTED;
-		fclose(dumpOutput);
-		fclose(currentFile);
-		return false;
-	}
+		Print(CHANNEL_INFO, "Dump saved");
+
 	return true;
 }
 
