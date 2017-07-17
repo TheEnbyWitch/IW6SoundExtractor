@@ -19,7 +19,7 @@
 #define FF_ZLIB_DATA_BEST_COMPRESSION 0xDA
 
 #define ERR_NOT_IMPLEMENTED Print(CHANNEL_ERROR, "Not implemented!")
-
+#define PROGRESSBAR_LENGTH 50
 
 int errorCount = 0;
 int warningCount = 0;
@@ -33,6 +33,38 @@ enum PrintChannel {
 	CHANNEL_WARNING,
 	CHANNEL_ERROR
 };
+
+void ShowConsoleCursor(bool showFlag)
+{
+	HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+
+	CONSOLE_CURSOR_INFO     cursorInfo;
+
+	GetConsoleCursorInfo(out, &cursorInfo);
+	cursorInfo.bVisible = showFlag; // set the cursor visibility
+	SetConsoleCursorInfo(out, &cursorInfo);
+}
+
+void SetCursorCoord(COORD coord)
+{
+	SetConsoleCursorPosition(
+		GetStdHandle(STD_OUTPUT_HANDLE),
+		coord
+	);
+}
+
+COORD GetCursorCoord()
+{
+	CONSOLE_SCREEN_BUFFER_INFO csbi;
+	COORD                      result;
+	if (!GetConsoleScreenBufferInfo(
+		GetStdHandle(STD_OUTPUT_HANDLE),
+		&csbi
+	))
+		return{ -1, -1 };
+	result = csbi.dwCursorPosition;
+	return result;
+}
 
 inline void PressEnterToContinue()
 {
@@ -98,6 +130,33 @@ inline void PrintErrorNotEnoughArgs()
 	Print(CHANNEL_NULL, "------------------------------------");
 }
 
+bool ProgressBarInUse = false;
+COORD progressBarStart = { 0, 0 };
+inline void ProgressBar(const char* text, int progress)
+{
+	if (!ProgressBarInUse)
+	{
+		ProgressBarInUse = true;
+		progressBarStart = GetCursorCoord();
+	}
+	SetCursorCoord(progressBarStart);
+	static char ProgressBarTXT[PROGRESSBAR_LENGTH + 1];
+	ProgressBarTXT[PROGRESSBAR_LENGTH] = '\0';
+	for (int i = 0; i < PROGRESSBAR_LENGTH; i++)
+	{
+		if (i < (progress / (100 / PROGRESSBAR_LENGTH)))
+			ProgressBarTXT[i] = 0xDB;
+		else
+			ProgressBarTXT[i] = 0xB1;
+	}
+	Print(CHANNEL_NULL, "%s: %s %3d%%", text, ProgressBarTXT, progress);
+}
+
+inline void EndProgressBar()
+{
+	ProgressBarInUse = false;
+}
+
 const char * ZlibError(int index)
 {
 	return "";
@@ -154,7 +213,7 @@ bool ProcessFile(char path[])
 {
 	bool isSigned = true;
 
-
+	EndProgressBar(); // just in case
 	char targetDumpName[256];
 	memset(targetDumpName, 0, sizeof(char) * 256);
 
@@ -162,7 +221,7 @@ bool ProcessFile(char path[])
 
 	strcat_s(targetDumpName, path);
 	strcat_s(targetDumpName, ".dump");
-	
+
 	FILE * currentFile;
 	FILE * dumpOutput;
 	fopen_s(&currentFile, path, "rb");
@@ -171,8 +230,12 @@ bool ProcessFile(char path[])
 		Print(CHANNEL_ERROR, "Couldn't find file!");
 		return false;
 	}
+	fseek(currentFile, 0, SEEK_END);
+	uint64_t fileSize = ftell(currentFile);
+	fseek(currentFile, 0, SEEK_SET);
 	Print(CHANNEL_INFO, "Dumping to %s", PathFindFileName(targetDumpName));
-	fopen_s(&dumpOutput, targetDumpName, "wb");
+	//fopen_s(&dumpOutput, targetDumpName, "wb");
+	tmpfile_s(&dumpOutput);
 	char FFMagic[10];
 	fread_s(FFMagic, 10, 1, 9, currentFile);
 	FFMagic[9] = '\0';
@@ -189,7 +252,7 @@ bool ProcessFile(char path[])
 		}
 	}
 
-	Print(CHANNEL_INFO, "FastFile is %s", (isSigned ? "signed" : "unsigned"));
+	Print(isSigned ? CHANNEL_WARNING : CHANNEL_INFO, "FastFile is %s", (isSigned ? "signed. Problems may occur during exporting." : "unsigned."));
 	z_stream stream;
 	stream.zalloc = NULL;
 	stream.zfree = NULL;
@@ -200,104 +263,110 @@ bool ProcessFile(char path[])
 	int ret = inflateInit(&stream);
 	int ret2 = 0;
 	unsigned have;
-	unsigned char in[FF_CHUNK_SIZE+1];
-	unsigned char out[FF_CHUNK_SIZE+1];
+	unsigned char in[FF_CHUNK_SIZE + 1];
+	unsigned char out[FF_CHUNK_SIZE + 1];
 
-		unsigned char zlibDataHeaderToCompare[4];
-		while (1)
+	unsigned char zlibDataHeaderToCompare[4];
+	while (1)
+	{
+		zlibDataHeaderToCompare[0] = zlibDataHeaderToCompare[1];
+		zlibDataHeaderToCompare[1] = zlibDataHeaderToCompare[2];
+		zlibDataHeaderToCompare[2] = zlibDataHeaderToCompare[3];
+
+
+		fread_s(&zlibDataHeaderToCompare[3], 1, 1, 1, currentFile);
+		int temp = ftell(currentFile);
+		temp;
+		ftell(currentFile);
+		if ((FF_ZLIB_DATA_HEADER == zlibDataHeaderToCompare[1] &&
+			(
+				//FF_ZLIB_DATA_DEFAULT_COMPRESSION == zlibDataHeaderToCompare[2] ||
+				//FF_ZLIB_DATA_NO_COMPRESSION == zlibDataHeaderToCompare[2] ||
+				FF_ZLIB_DATA_BEST_COMPRESSION == zlibDataHeaderToCompare[2]
+				)) &&
+			zlibDataHeaderToCompare[0] != '\x7c' && zlibDataHeaderToCompare[3] != '\x09')
+			break;
+	}
+	fseek(currentFile, -3, SEEK_CUR);
+	//fread_s(dummy, 0x3ff8, 1, 0x3ff8, currentFile); // skip the garbage //0x146
+	int zlibDataBegin = ftell(currentFile);
+	Print(CHANNEL_INFO, "Found zlib data at %d", zlibDataBegin);
+
+	while (ret != Z_STREAM_END)
+	{
+		stream.avail_in = fread_s(in, FF_CHUNK_SIZE, 1, FF_CHUNK_SIZE, currentFile);
+		ret2 = ferror(currentFile);
+		if (ret2)
 		{
-			zlibDataHeaderToCompare[0] = zlibDataHeaderToCompare[1];
-			zlibDataHeaderToCompare[1] = zlibDataHeaderToCompare[2];
-			zlibDataHeaderToCompare[2] = zlibDataHeaderToCompare[3];
-
-
-			fread_s(&zlibDataHeaderToCompare[3], 1, 1, 1, currentFile);
-			int temp = ftell(currentFile);
-			temp;
-			ftell(currentFile);
-			if ((FF_ZLIB_DATA_HEADER == zlibDataHeaderToCompare[1] &&
-				(
-					//FF_ZLIB_DATA_DEFAULT_COMPRESSION == zlibDataHeaderToCompare[2] ||
-					//FF_ZLIB_DATA_NO_COMPRESSION == zlibDataHeaderToCompare[2] ||
-					FF_ZLIB_DATA_BEST_COMPRESSION == zlibDataHeaderToCompare[2]
-					)) &&
-				zlibDataHeaderToCompare[0] != '\x7c' && zlibDataHeaderToCompare[3] != '\x09')
-				break;
+			inflateEnd(&stream);
+			Print(CHANNEL_ERROR, "An unknown error occured! Code: %d", ret);
+			fclose(dumpOutput);
+			fclose(currentFile);
+			EndProgressBar();
+			return false;
 		}
-		fseek(currentFile, -3, SEEK_CUR);
-		//fread_s(dummy, 0x3ff8, 1, 0x3ff8, currentFile); // skip the garbage //0x146
-		int zlibDataBegin = ftell(currentFile);
-		Print(CHANNEL_INFO, "Found zlib data at %d", zlibDataBegin);
-		
-		while (ret != Z_STREAM_END)
+		if (stream.avail_in == 0)
 		{
-			stream.avail_in = fread_s(in, FF_CHUNK_SIZE, 1, FF_CHUNK_SIZE, currentFile);
-			ret2 = ferror(currentFile);
+			break;
+		}
+		stream.next_in = in;
+		//Print(CHANNEL_INFO, "Current pos: %d", ftell(currentFile));
+		ProgressBar("Dumping FastFile", ((uint64_t)ftell(currentFile) * (uint64_t)100) / fileSize);
+		while (stream.avail_out == 0 && stream.avail_in > 0)
+		{
+			//InflateChunk(stream, in, out);
+
+			stream.avail_out = FF_CHUNK_SIZE;
+			stream.next_out = out;
+
+			ret = inflate(&stream, Z_BLOCK);
+			if (ret != Z_OK && ret != Z_STREAM_END)
+			{
+				Print(CHANNEL_ERROR, "Can't decompress FF: %s (%d) %s (%d)", zError(ret), ret, stream.msg ? stream.msg : "", zlibDataBegin + stream.total_in);
+				fclose(dumpOutput);
+				fclose(currentFile);
+				inflateEnd(&stream);
+				EndProgressBar();
+				return false;
+			}
+			else if (ret == Z_STREAM_END) {
+				break;
+			}
+			have = FF_CHUNK_SIZE - stream.avail_out;
+			fwrite(out, 1, have, dumpOutput);
+			//fflush(dumpOutput);
+			ret2 = ferror(dumpOutput);
 			if (ret2)
 			{
-				inflateEnd(&stream);
 				Print(CHANNEL_ERROR, "An unknown error occured! Code: %d", ret);
 				fclose(dumpOutput);
 				fclose(currentFile);
+				inflateEnd(&stream);
+				EndProgressBar();
 				return false;
 			}
-			if (stream.avail_in == 0)
-			{
-				break;
-			}
-			stream.next_in = in;
-			//Print(CHANNEL_INFO, "Current pos: %d", ftell(currentFile));
-			while (stream.avail_out == 0 && stream.avail_in > 0)
-			{
-				//InflateChunk(stream, in, out);
-				
-				stream.avail_out = FF_CHUNK_SIZE;
-				stream.next_out = out;
-				
-				ret = inflate(&stream, Z_BLOCK);
-				if(ret != Z_OK && ret != Z_STREAM_END)
-				{
-					Print(CHANNEL_ERROR, "Can't decompress FF: %s (%d) %s (%d)", zError(ret), ret, stream.msg ? stream.msg : "", zlibDataBegin + stream.total_in);
-					fclose(dumpOutput);
-					fclose(currentFile);
-					inflateEnd(&stream);
-					return false;
-				}
-				else if (ret == Z_STREAM_END) {
-					break;
-				}
-				have = FF_CHUNK_SIZE - stream.avail_out;
-				fwrite(out, 1, have, dumpOutput);
-				//fflush(dumpOutput);
-				ret2 = ferror(dumpOutput);
-				if (ret2)
-				{
-					Print(CHANNEL_ERROR, "An unknown error occured! Code: %d", ret);
-					fclose(dumpOutput);
-					fclose(currentFile);
-					inflateEnd(&stream);
-					return false;
-				}
-				stream.avail_out = 0;
-			}
+			stream.avail_out = 0;
 		}
-		inflateEnd(&stream);
-		//Print(CHANNEL_ERROR, "%d", ret);
-		ret = (ret == Z_STREAM_END || ret == Z_OK ? Z_OK : Z_DATA_ERROR);
-		if (ret == Z_DATA_ERROR)
-		{
-			Print(CHANNEL_ERROR, "An issue occured during export and I wasn't able to catch it somehow.");
-		}
-		Print(CHANNEL_INFO, "Saving dump...");
-		fclose(dumpOutput);
-		fclose(currentFile);
-		Print(CHANNEL_INFO, "Dump saved");
+	}
+	inflateEnd(&stream);
+	//Print(CHANNEL_ERROR, "%d", ret);
+	ret = (ret == Z_STREAM_END || ret == Z_OK ? Z_OK : Z_DATA_ERROR);
+	if (ret == Z_DATA_ERROR)
+	{
+		Print(CHANNEL_ERROR, "An issue occured during export and I wasn't able to catch it somehow.");
+	}
+	//
+	fclose(currentFile);
+	Print(CHANNEL_INFO, "Extracting sounds");
+	rewind(dumpOutput);
 
+	fclose(dumpOutput);
 	return true;
 }
 
 int main(int argc, char * argv[])
 {
+	ShowConsoleCursor(false);
 	startClock = clock();
 	PrintTitle();
 	if (argc < 2)
@@ -324,6 +393,7 @@ int main(int argc, char * argv[])
 #ifdef PAUSE_AFTER_EXTRACT
 	PressEnterToContinue();
 #endif
-    return 0;
+	ShowConsoleCursor(true);
+	return 0;
 }
 
